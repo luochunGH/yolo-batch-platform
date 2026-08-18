@@ -120,6 +120,10 @@ dd { margin: 0; color: #31415d; font-size: 13px; font-weight: 700; }
 .actions button { padding: 6px 9px; color: #4776d3; background: #f4f7ff; border: 1px solid #d7e2fb; border-radius: 4px; font-size: 12px; }
 .actions .danger { color: #c14c58; background: #fff5f6; border-color: #f3d6da; }
 .empty { padding: 42px 8px 18px; color: #8795a8; text-align: center; }
+.site-footer { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 18px 0 6px; color: #8795a8; font-size: 12px; }
+.site-footer a { color: #4776d3; text-decoration: none; font-weight: 700; }
+.site-footer a:hover { text-decoration: underline; }
+.footer-separator { color: #c4cedb; }
 @media (max-width: 1200px) { .workspace-grid { grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.2fr); } .table { grid-column: 1 / -1; } .task-list { max-height: 420px; } }
 @media (max-width: 800px) { .shell { padding: 14px; } .worker-connection { grid-template-columns: auto 1fr; } .worker-connection input, .worker-connection button { grid-column: 1 / -1; } .workspace-grid { grid-template-columns: 1fr; min-height: 0; } .table { grid-column: auto; } .task-list { max-height: none; } }
 @media (max-width: 520px) { .form-grid { grid-template-columns: 1fr; } .panel { padding: 17px; } }
