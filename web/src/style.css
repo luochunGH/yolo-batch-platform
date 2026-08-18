@@ -8,7 +8,7 @@
 body { margin: 0; min-width: 320px; background: #f1f5fb; }
 button, input, select { font: inherit; }
 button { cursor: pointer; }
-.shell { max-width: 1920px; margin: auto; padding: 12px 28px 26px; }
+.shell { max-width: 1920px; margin: auto; padding: 10px 28px 8px; }
 .panel, .metric { background: #fff; border: 1px solid #e1e8f2; border-radius: 8px; box-shadow: 0 2px 7px rgba(42, 70, 110, .025); }
 .panel { padding: 22px; }
 .welcome { min-height: 194px; position: relative; display: flex; align-items: center; justify-content: space-between; overflow: hidden; padding: 30px 32px; }
@@ -43,7 +43,7 @@ h2 { font-size: 18px; line-height: 1.3; }
 .metric.orange em { color: #e99a19; }
 .metric.green em { color: #2eab7d; }
 .metric.red em { color: #e15a5a; }
-.workspace-grid { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(320px, 3fr) minmax(560px, 5fr); gap: 14px; align-items: stretch; min-height: calc(100vh - 62px); }
+.workspace-grid { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(320px, 3fr) minmax(560px, 5fr); gap: 14px; align-items: stretch; min-height: calc(100vh - 86px); }
 .service-panel, .upload, .table { min-width: 0; }
 .table { display: flex; flex-direction: column; }
 .panel-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -120,9 +120,10 @@ dd { margin: 0; color: #31415d; font-size: 13px; font-weight: 700; }
 .actions button { padding: 6px 9px; color: #4776d3; background: #f4f7ff; border: 1px solid #d7e2fb; border-radius: 4px; font-size: 12px; }
 .actions .danger { color: #c14c58; background: #fff5f6; border-color: #f3d6da; }
 .empty { padding: 42px 8px 18px; color: #8795a8; text-align: center; }
-.site-footer { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 18px 0 6px; color: #8795a8; font-size: 12px; }
-.site-footer a { color: #4776d3; text-decoration: none; font-weight: 700; }
-.site-footer a:hover { text-decoration: underline; }
+.site-footer { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; min-height: 28px; padding: 5px 0 0; color: #8795a8; font-size: 12px; }
+.github-link { display: inline-flex; align-items: center; gap: 5px; color: #4776d3; text-decoration: none; font-weight: 700; }
+.github-link:hover { color: #285cbf; text-decoration: underline; }
+.github-icon { width: 15px; height: 15px; fill: currentColor; }
 .footer-separator { color: #c4cedb; }
 @media (max-width: 1200px) { .workspace-grid { grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.2fr); } .table { grid-column: 1 / -1; } .task-list { max-height: 420px; } }
 @media (max-width: 800px) { .shell { padding: 14px; } .worker-connection { grid-template-columns: auto 1fr; } .worker-connection input, .worker-connection button { grid-column: 1 / -1; } .workspace-grid { grid-template-columns: 1fr; min-height: 0; } .table { grid-column: auto; } .task-list { max-height: none; } }
