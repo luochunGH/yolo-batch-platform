@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+
+data/
+web/node_modules/
+web/dist/
+__pycache__/
+*.py[cod]
+*.pt
+*.onnx
+*.engine
+*.log
+.pytest_cache/
+.mypy_cache/
+.DS_Store

@@ -1,0 +1,88 @@
+services:
+  yolo-web:
+    build:
+      context: ./web
+    image: yolo-batch-web:1.0
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - yolo-api
+
+  yolo-api:
+    build:
+      context: .
+      network: host
+    image: yolo-batch-service:1.0
+    restart: unless-stopped
+    command: uvicorn service.api:app --host 0.0.0.0 --port 8000
+    user: "1000:1000"
+    environment:
+      API_KEY: ${API_KEY:?set API_KEY in .env}
+      REDIS_URL: redis://redis:6379/0
+      DATA_DIR: /data
+      MAX_UPLOAD_GB: "20"
+    volumes:
+      - ./data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  yolo-worker:
+    image: yolo-batch-service:1.0
+    restart: unless-stopped
+    command: python -m service.worker
+    user: "1000:1000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATA_DIR: /data
+      MODEL_PATH: /data/models/yolo11n.pt
+      MODEL_NAME: yolo11n.pt
+      DEVICE: "0"
+      IMGSZ: "640"
+      BATCH_SIZE: "32"
+      CONFIDENCE: "0.25"
+    volumes:
+      - ./data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  yolo-cleaner:
+    image: yolo-batch-service:1.0
+    restart: unless-stopped
+    command: python -m service.cleaner
+    user: "1000:1000"
+    environment:
+      DATA_DIR: /data
+      CLEANUP_INTERVAL_SECONDS: "300"
+      RESULT_RETENTION_DAYS: "30"
+      FAILED_RETENTION_DAYS: "7"
+      DISK_HIGH_WATERMARK: "80"
+      AUTO_CLEANUP: "0"
+    volumes:
+      - ./data:/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  redis-data:

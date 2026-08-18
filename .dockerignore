@@ -1,0 +1,7 @@
+.env
+data
+app
+scripts
+web
+__pycache__
+*.pyc
