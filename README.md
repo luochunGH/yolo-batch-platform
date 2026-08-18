@@ -1,6 +1,13 @@
 # YOLO 模型训练中心
 
+[![Version](https://img.shields.io/badge/version-1.0.0-2563eb.svg)](https://github.com/luochunGH/yolo-batch-platform/releases)
+[![GitHub](https://img.shields.io/badge/GitHub-open--source-181717.svg?logo=github)](https://github.com/luochunGH/yolo-batch-platform)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/luochunGH/yolo-batch-platform/blob/main/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/luochunGH/yolo-batch-platform?style=social)](https://github.com/luochunGH/yolo-batch-platform)
+
 一个完全运行在 Docker 中的 YOLO 批量训练平台：通过网页上传带标注的数据集，使用 GPU 执行训练，在网页查看任务进度，并下载训练得到的 `best.pt` 模型文件。
+
+当前版本：`v1.0.0`
 
 ## 功能
 
