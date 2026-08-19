@@ -59,6 +59,36 @@ services:
       redis:
         condition: service_healthy
 
+  yolo-worker-2:
+    image: yolo-batch-service:1.0
+    restart: unless-stopped
+    shm_size: "16gb"
+    command: python -m service.worker
+    user: "1000:1000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATA_DIR: /data
+      MODEL_PATH: /data/models/yolo11n.pt
+      MODEL_NAME: yolo11n.pt
+      DEVICE: "0"
+      IMGSZ: "640"
+      BATCH_SIZE: "32"
+      CONFIDENCE: "0.25"
+      DATALOADER_WORKERS: "2"
+      WORKER_ID: worker-2
+    volumes:
+      - ./data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+
   yolo-cleaner:
     image: yolo-batch-service:1.0
     restart: unless-stopped

@@ -25,6 +25,8 @@ DEFAULT_IMGSZ = int(os.getenv("IMGSZ", "640"))
 DEFAULT_BATCH_SIZE = int(os.getenv("BATCH_SIZE", "32"))
 DEFAULT_CONFIDENCE = float(os.getenv("CONFIDENCE", "0.25"))
 DATALOADER_WORKERS = int(os.getenv("DATALOADER_WORKERS", "2"))
+WORKER_ID = os.getenv("WORKER_ID", "worker-1")
+STATUS_PATH = db.DATA_DIR / ("worker-status.json" if WORKER_ID == "worker-1" else f"worker-status-{WORKER_ID}.json")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
@@ -88,7 +90,7 @@ def gpu_status() -> dict[str, object]:
 
 def write_worker_status(state: str, job_id: str | None = None, **extra: object) -> None:
     payload = {"state": state, "job_id": job_id, "updated_at": db.now(), **gpu_status(), **extra}
-    db.write_json(db.DATA_DIR / "worker-status.json", payload)
+    db.write_json(STATUS_PATH, payload)
 
 
 def resolve_imgsz(value: object, dataset_root: Path | None = None) -> int | tuple[int, int]:
@@ -124,6 +126,21 @@ def serialize_result(result: object, source: Path) -> dict[str, object]:
             }
         )
     return {"image": str(source), "detections": detections}
+
+
+def readable_images(images: list[Path], work_dir: Path) -> tuple[list[Path], list[dict[str, str]]]:
+    valid: list[Path] = []
+    skipped: list[dict[str, str]] = []
+    for image in images:
+        try:
+            with Image.open(image) as source:
+                source.verify()
+            with Image.open(image) as source:
+                source.load()
+            valid.append(image)
+        except Exception as exc:
+            skipped.append({"image": str(image.relative_to(work_dir)), "reason": str(exc)[:300]})
+    return valid, skipped
 
 
 def resolve_inside(path: Path, root: Path) -> Path:
@@ -344,7 +361,13 @@ def run_inference(job_id: str) -> None:
         images = sorted(path for path in work_dir.rglob("*") if path.suffix.lower() in IMAGE_SUFFIXES)
         if not images:
             raise ValueError("archive contains no supported images")
-        db.update_job(job_id, total=len(images), completed=0, failed=0)
+        images, skipped = readable_images(images, work_dir)
+        total_images = len(images) + len(skipped)
+        if not images:
+            raise ValueError(f"all {total_images} images are unreadable")
+        db.update_job(job_id, total=total_images, completed=0, failed=len(skipped))
+        if skipped:
+            write_worker_status("inferring", job_id, phase=f"跳过损坏图片 {len(skipped)} 张")
         model = YOLO(str(model_path_for_job(job)))
         result_path = result_dir / "results.jsonl"
         annotated_dir = result_dir / "images"
@@ -369,17 +392,17 @@ def run_inference(job_id: str) -> None:
                     target = annotated_dir / image.relative_to(work_dir)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     Image.fromarray(result.plot()[:, :, ::-1]).save(target)
-            db.update_job(job_id, completed=min(offset + len(batch), len(images)))
+            db.update_job(job_id, completed=min(offset + len(batch), len(images)), failed=len(skipped))
             write_worker_status("inferring", job_id, phase=f"推理图片 {min(offset + len(batch), len(images))}/{len(images)}")
         summary_path = result_dir / "summary.json"
-        db.write_json(summary_path, {"job_id": job_id, "total": len(images), "completed_at": db.now()})
+        db.write_json(summary_path, {"job_id": job_id, "total": total_images, "completed": len(images), "skipped": skipped, "completed_at": db.now()})
         archive_result = result_dir / "inference-results.zip"
         with zipfile.ZipFile(archive_result, "w", zipfile.ZIP_DEFLATED) as package:
             for path in (annotated_dir / image.relative_to(work_dir) for image in images):
                 package.write(path, path.relative_to(result_dir))
             package.write(result_path, result_path.name)
             package.write(summary_path, summary_path.name)
-        db.update_job(job_id, status="completed", completed=len(images), finished_at=db.now(), result_path=str(archive_result))
+        db.update_job(job_id, status="completed", completed=len(images), failed=len(skipped), finished_at=db.now(), result_path=str(archive_result))
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
         db.update_job(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
@@ -403,10 +426,11 @@ def main() -> None:
     db.initialize()
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    for job in db.list_jobs(limit=10000):
-        if job["status"] in {"running", "cancelling"}:
-            db.update_job(job["id"], status="queued", started_at=None, error="Worker 重启后自动重新排队")
-            redis_client.rpush(QUEUE_KEY, job["id"])
+    if WORKER_ID == "worker-1" and redis_client.set("yolo:worker-recovery", "1", nx=True, ex=60):
+        for job in db.list_jobs(limit=10000):
+            if job["status"] in {"running", "cancelling"}:
+                db.update_job(job["id"], status="queued", started_at=None, error="Worker 重启后自动重新排队")
+                redis_client.rpush(QUEUE_KEY, job["id"])
     write_worker_status("idle")
     while True:
         item = redis_client.blpop(QUEUE_KEY, timeout=10)

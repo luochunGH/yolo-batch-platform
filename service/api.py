@@ -129,14 +129,16 @@ def health() -> dict[str, str]:
 @app.get("/api/v1/dashboard", dependencies=[Depends(require_api_key)])
 def get_dashboard() -> dict[str, object]:
     usage = shutil.disk_usage(db.DATA_DIR)
-    status_path = db.DATA_DIR / "worker-status.json"
-    worker_status = status_path.read_text(encoding="utf-8") if status_path.exists() else "{}"
+    status_paths = sorted(db.DATA_DIR.glob("worker-status*.json"))
+    worker_statuses = [json.loads(path.read_text(encoding="utf-8")) for path in status_paths]
+    worker_status = next((item for item in worker_statuses if item.get("state") not in {"idle", None}), worker_statuses[0] if worker_statuses else {})
+    worker_status["workers"] = worker_statuses
     return {
         **db.dashboard(),
         "disk": {"total": usage.total, "used": usage.used, "free": usage.free},
         "models": available_models(),
         "trained_models": trained_models(),
-        "worker": json.loads(worker_status),
+        "worker": worker_status,
     }
 
 
