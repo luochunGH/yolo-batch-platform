@@ -267,7 +267,7 @@ def run_training(job_id: str) -> None:
         write_worker_status("training", job_id, phase="加载基础模型", image_count=image_count, class_count=class_count, epoch=0, epochs=epochs)
         base_model = model_path_for(job.get("model"))
         model = YOLO(str(base_model))
-        write_worker_status("training", job_id, phase="开始训练", image_count=image_count, class_count=class_count, epoch=0, epochs=epochs)
+        write_worker_status("training", job_id, phase="检查训练环境", image_count=image_count, class_count=class_count, epoch=0, epochs=epochs)
 
         def on_epoch_end(trainer: object) -> None:
             epoch = int(getattr(trainer, "epoch", 0)) + 1
@@ -286,6 +286,7 @@ def run_training(job_id: str) -> None:
             batch=int(job["train_batch"] or 16),
             workers=DATALOADER_WORKERS,
             device=DEVICE,
+            amp=False,
             project=str(result_dir),
             name="run",
             exist_ok=True,
