@@ -97,6 +97,11 @@ def list_jobs(limit: int = 100) -> list[dict[str, object]]:
     return [dict(row) for row in rows]
 
 
+def name_exists(name: str) -> bool:
+    with connection() as db:
+        return db.execute("SELECT 1 FROM jobs WHERE name = ? LIMIT 1", (name,)).fetchone() is not None
+
+
 def update_job(job_id: str, **values: object) -> None:
     if not values:
         return

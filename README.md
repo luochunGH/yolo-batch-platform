@@ -17,7 +17,7 @@
 - Redis 队列保证网页 API 与 GPU 训练进程解耦
 - SQLite 保存任务状态，不需要单独部署 PostgreSQL
 - 训练完成后提供 `best.pt`、`last.pt` 下载
-- 支持取消任务、删除任务和自动清理临时文件
+- 支持取消任务、删除任务和人工管理任务数据
 - 所有服务通过 Docker Compose 运行，不污染宿主机 Python/Node 环境
 
 ## 架构
@@ -34,7 +34,7 @@ yolo-api (FastAPI) ---> SQLite (/data/app.db)
   v
 Redis ---> yolo-worker (Ultralytics + NVIDIA GPU)
 
-yolo-cleaner ---> 清理过期结果和临时文件
+yolo-cleaner ---> 保留为独立容器，当前不自动删除用户数据
 ```
 
 共 5 个容器：`yolo-web`、`yolo-api`、`yolo-worker`、`yolo-cleaner`、`redis`。SQLite 是 API 容器挂载的数据文件，不是独立容器。
@@ -113,13 +113,13 @@ names:
 
 数据目录位于 Compose 项目下的 `data/`：
 
-- `uploads/`：原始 ZIP。任务成功处理后自动删除
+- `uploads/`：原始 ZIP。任务成功后仍保留，用于复制 ZIP 重新训练，直到人工删除任务
 - `work/`：解压后的临时训练数据。任务成功或失败后按流程清理
-- `results/`：训练日志和结果文件。成功结果默认保留 30 天，失败任务默认保留 7 天
+- `results/`：训练日志和结果文件，直到人工删除任务
 - `models/`：训练产出的模型文件。清理器不会自动删除，网页可手动删除任务及其模型
 - `app.db`：SQLite 任务数据库
 
-清理器默认每 5 分钟运行一次，并跳过排队中和运行中的任务。磁盘接近高水位时应优先在网页删除不再需要的任务和模型。
+当前不设置按时间或磁盘水位自动删除。磁盘接近高水位时，请在网页任务记录中人工删除不再需要的任务；删除任务会同时删除其 ZIP、结果和模型文件。
 
 ## API
 
@@ -134,6 +134,7 @@ X-API-Key: your-api-key
 - `GET /api/v1/health`：健康检查
 - `GET /api/v1/jobs`：任务列表
 - `POST /api/v1/jobs`：上传训练 ZIP 并创建任务
+- `POST /api/v1/jobs/{id}/retry`：复制原训练 ZIP，按原参数或新参数创建重训任务
 - `POST /api/v1/jobs/{id}/cancel`：取消任务
 - `GET /api/v1/jobs/{id}/download`：下载训练模型
 - `DELETE /api/v1/jobs/{id}`：删除任务及相关文件

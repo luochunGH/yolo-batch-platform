@@ -261,7 +261,6 @@ def run_training(job_id: str) -> None:
         if last_path.exists():
             shutil.copy2(last_path, model_dir / "last.pt")
         db.update_job(job_id, status="completed", completed=epochs, finished_at=db.now(), result_path=str(run_dir), artifact_path=str(artifact_path))
-        archive.unlink(missing_ok=True)
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
         db.update_job(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
@@ -315,7 +314,6 @@ def run_evaluation(job_id: str) -> None:
         report_path = result_dir / "evaluation.json"
         db.write_json(report_path, report)
         db.update_job(job_id, status="completed", completed=image_count, finished_at=db.now(), result_path=str(report_path))
-        archive.unlink(missing_ok=True)
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
         db.update_job(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
@@ -374,7 +372,6 @@ def run_inference(job_id: str) -> None:
             package.write(result_path, result_path.name)
             package.write(summary_path, summary_path.name)
         db.update_job(job_id, status="completed", completed=len(images), finished_at=db.now(), result_path=str(archive_result))
-        archive.unlink(missing_ok=True)
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
         db.update_job(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())

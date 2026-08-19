@@ -125,6 +125,17 @@ dd { margin: 0; color: #31415d; font-size: 13px; font-weight: 700; }
 .github-link:hover { color: #285cbf; text-decoration: underline; }
 .github-icon { width: 15px; height: 15px; fill: currentColor; }
 .footer-separator { color: #c4cedb; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: rgba(30, 45, 70, .34); }
+.modal { width: min(620px, 100%); max-height: min(720px, 90vh); overflow: auto; padding: 24px; box-shadow: 0 18px 50px rgba(30, 50, 90, .2); }
+.icon-close { width: 30px; height: 30px; padding: 0; color: #71829b; background: #f4f7fb; border: 1px solid #dbe4ef; border-radius: 50%; font-size: 20px; line-height: 1; }
+.detail-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 22px 0 12px; color: #243653; font-size: 16px; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 24px; margin: 0; }
+.detail-grid div { align-items: center; }
+.detail-grid dd { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.error-box { margin-top: 16px; padding: 13px; border: 1px solid #f1d2d6; border-radius: 5px; color: #a84650; background: #fff5f6; font-size: 13px; line-height: 1.6; }
+.error-box p { margin-top: 5px; overflow-wrap: anywhere; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.compact { width: auto; }
 @media (max-width: 1200px) { .workspace-grid { grid-template-columns: minmax(260px, .8fr) minmax(420px, 1.2fr); } .table { grid-column: 1 / -1; } .task-list { max-height: 420px; } }
 @media (max-width: 800px) { .shell { padding: 14px; } .worker-connection { grid-template-columns: auto 1fr; } .worker-connection input, .worker-connection button { grid-column: 1 / -1; } .workspace-grid { grid-template-columns: 1fr; min-height: 0; } .table { grid-column: auto; } .task-list { max-height: none; } }
-@media (max-width: 520px) { .form-grid { grid-template-columns: 1fr; } .panel { padding: 17px; } }
+@media (max-width: 520px) { .form-grid { grid-template-columns: 1fr; } .detail-grid { grid-template-columns: 1fr; } .panel { padding: 17px; } }

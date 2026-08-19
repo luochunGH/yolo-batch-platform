@@ -66,10 +66,6 @@ services:
     environment:
       DATA_DIR: /data
       CLEANUP_INTERVAL_SECONDS: "300"
-      RESULT_RETENTION_DAYS: "30"
-      FAILED_RETENTION_DAYS: "7"
-      DISK_HIGH_WATERMARK: "80"
-      AUTO_CLEANUP: "0"
     volumes:
       - ./data:/data
 

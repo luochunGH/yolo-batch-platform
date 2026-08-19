@@ -2,6 +2,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import uuid
 import zipfile
@@ -19,6 +20,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 MAX_UPLOAD_GB = int(os.getenv("MAX_UPLOAD_GB", "20"))
 QUEUE_KEY = "yolo:jobs"
 MODEL_NAMES = ("yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt")
+NAME_SUFFIX_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 app = FastAPI(title="Docker YOLO Web Console", version="1.0.0")
@@ -70,6 +72,17 @@ def job_payload(job: dict[str, object]) -> dict[str, object]:
     failed = int(job["failed"])
     job["progress"] = round((completed + failed) * 100 / total, 2) if total else 0
     return job
+
+
+def unique_job_name(requested: str, fallback: str) -> str:
+    base = requested.strip() or fallback
+    if not db.name_exists(base):
+        return base
+    for _ in range(20):
+        candidate = f"{base}-{''.join(secrets.choice(NAME_SUFFIX_ALPHABET) for _ in range(6))}"
+        if not db.name_exists(candidate):
+            return candidate
+    raise HTTPException(status_code=500, detail="could not allocate a unique task name")
 
 
 def validate_archive_names(package: zipfile.ZipFile) -> None:
@@ -195,7 +208,7 @@ async def create_job(
 
     job = {
         "id": job_id,
-        "name": name.strip() or Path(archive.filename).stem,
+        "name": unique_job_name(name, Path(archive.filename).stem),
         "status": "queued",
         "model": model,
         "model_id": model_id,
@@ -212,6 +225,56 @@ async def create_job(
     db.create_job(job)
     queue.rpush(QUEUE_KEY, job_id)
     return job_payload({**job, "total": epochs if task_type == "train" else image_count, "completed": 0, "failed": 0})
+
+
+@app.post("/api/v1/jobs/{source_job_id}/retry", dependencies=[Depends(require_api_key)])
+def retry_job(
+    source_job_id: str,
+    name: str = Form(default=""),
+    model: str = Form(default=""),
+    imgsz: str = Form(default=""),
+    epochs: int | None = Form(default=None),
+    train_batch: int | None = Form(default=None),
+) -> dict[str, object]:
+    source = db.get_job(source_job_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="source job not found")
+    if source.get("task_type") != "train":
+        raise HTTPException(status_code=422, detail="only training jobs can be retrained")
+    source_archive = Path(str(source.get("uploaded_path") or ""))
+    if not source_archive.is_file():
+        raise HTTPException(status_code=404, detail="source ZIP is no longer available")
+    selected_model = model.strip() or str(source.get("model") or "yolo11n.pt")
+    if selected_model not in available_models():
+        raise HTTPException(status_code=422, detail="selected pretrained model is not installed")
+    normalized_imgsz = normalize_imgsz(imgsz.strip() or str(source.get("imgsz") or "640"))
+    selected_epochs = int(epochs if epochs is not None else source.get("epochs") or 50)
+    selected_batch = int(train_batch if train_batch is not None else source.get("train_batch") or 16)
+    if not 1 <= selected_epochs <= 1000 or not 1 <= selected_batch <= 128:
+        raise HTTPException(status_code=422, detail="invalid training parameters")
+
+    job_id = uuid.uuid4().hex
+    archive_path = db.DATA_DIR / "uploads" / f"{job_id}.zip"
+    shutil.copy2(source_archive, archive_path)
+    job = {
+        "id": job_id,
+        "name": unique_job_name(name, f"{source['name']}-重新训练"),
+        "status": "queued",
+        "model": selected_model,
+        "model_id": None,
+        "imgsz": normalized_imgsz,
+        "confidence": float(source.get("confidence") or 0.25),
+        "task_type": "train",
+        "epochs": selected_epochs,
+        "train_batch": selected_batch,
+        "created_at": db.now(),
+        "uploaded_path": str(archive_path),
+        "dataset_path": None,
+        "artifact_path": None,
+    }
+    db.create_job(job)
+    queue.rpush(QUEUE_KEY, job_id)
+    return job_payload({**job, "total": selected_epochs, "completed": 0, "failed": 0, "source_job_id": source_job_id})
 
 
 @app.post("/api/v1/jobs/{job_id}/cancel", dependencies=[Depends(require_api_key)])
