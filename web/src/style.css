@@ -67,6 +67,8 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .drop input { display: none; }
 .drop b { color: #2c4166; font-size: 14px; }
 .drop small { color: #8998ad; font-size: 12px; }
+.upload-progress { display: grid; gap: 6px; margin: -8px 0 16px; color: #4772c7; font-size: 12px; font-weight: 700; }
+.upload-progress i { display: block; height: 7px; overflow: hidden; border-radius: 4px; background: #477fee; transition: width .2s ease; }
 .upload-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; color: #477ce8; background: #eaf0ff; font-size: 21px; font-weight: 700; }
 .mode-switch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 18px; padding: 4px; border: 1px solid #e0e7f2; border-radius: 6px; background: #f6f8fc; }
 .mode-switch button { padding: 8px 6px; color: #71829b; background: transparent; border: 0; border-radius: 4px; font-size: 13px; font-weight: 700; }

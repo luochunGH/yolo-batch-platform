@@ -413,14 +413,14 @@ def download_result(job_id: str, format: str | None = Query(default=None), token
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
-    path_value = job.get("artifact_path") or job.get("result_path")
+    path_value = (job.get("model_package_path") or job.get("artifact_path")) if job.get("task_type") == "train" else (job.get("artifact_path") or job.get("result_path"))
     if not path_value:
         raise HTTPException(status_code=404, detail="result not found")
     path = Path(str(path_value))
     if not path.exists():
         raise HTTPException(status_code=404, detail="result has been cleaned")
     if job.get("task_type") == "train":
-        filename, media_type = f"{job_id}-best.pt", "application/octet-stream"
+        filename, media_type = f"{job_id}-models.zip", "application/zip"
     elif job.get("task_type") == "evaluate":
         filename, media_type = f"{job_id}-evaluation.json", "application/json"
     else:

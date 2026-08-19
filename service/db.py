@@ -69,6 +69,8 @@ def initialize() -> None:
             "attempt_id": "TEXT",
             "resume_count": "INTEGER NOT NULL DEFAULT 0",
             "oom_retries": "INTEGER NOT NULL DEFAULT 0",
+            "model_package_path": "TEXT",
+            "model_export_error": "TEXT",
         }
         existing = {row[1] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
         for column, definition in migrations.items():

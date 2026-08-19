@@ -170,6 +170,35 @@ def write_worker_status(state: str, job_id: str | None = None, **extra: object) 
     db.write_json(STATUS_PATH, payload)
 
 
+def build_model_package(job_id: str, best_path: Path, last_path: Path, model_dir: Path) -> tuple[Path, str | None]:
+    onnx_path = model_dir / "best.onnx"
+    export_error: str | None = None
+    try:
+        from ultralytics import YOLO
+
+        YOLO(str(best_path)).export(format="onnx", imgsz=DEFAULT_IMGSZ, device="cpu", verbose=False)
+        exported = best_path.with_suffix(".onnx")
+        if exported.is_file() and exported != onnx_path:
+            shutil.copy2(exported, onnx_path)
+    except Exception as exc:
+        export_error = str(exc)[:1000]
+    package_path = model_dir / f"{job_id}-models.zip"
+    manifest = {
+        "job_id": job_id,
+        "files": [],
+        "onnx_export": "failed" if export_error else "completed",
+        "onnx_error": export_error,
+        "created_at": db.now(),
+    }
+    with zipfile.ZipFile(package_path, "w", zipfile.ZIP_DEFLATED) as package:
+        for path in (best_path, last_path, onnx_path):
+            if path.is_file():
+                package.write(path, path.name)
+                manifest["files"].append({"name": path.name, "size": path.stat().st_size})
+        package.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+    return package_path, export_error
+
+
 def resolve_imgsz(value: object, dataset_root: Path | None = None) -> int | tuple[int, int]:
     size = str(value or DEFAULT_IMGSZ).strip().lower().replace("×", "x")
     if size == "original":
@@ -380,7 +409,10 @@ def run_training(job_id: str, redis_client: redis.Redis) -> None:
         shutil.copy2(best_path, artifact_path)
         if last_path.exists():
             shutil.copy2(last_path, model_dir / "last.pt")
-        update_attempt(job_id, status="completed", completed=epochs, finished_at=db.now(), result_path=str(run_dir), artifact_path=str(artifact_path))
+        last_artifact = model_dir / "last.pt"
+        write_worker_status("training", job_id, phase="导出并打包模型", image_count=image_count, class_count=class_count, epoch=epochs, epochs=epochs)
+        package_path, export_error = build_model_package(job_id, artifact_path, last_artifact, model_dir)
+        update_attempt(job_id, status="completed", completed=epochs, finished_at=db.now(), result_path=str(run_dir), artifact_path=str(artifact_path), model_package_path=str(package_path), model_export_error=export_error)
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
         message = str(exc)
