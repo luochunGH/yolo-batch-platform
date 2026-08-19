@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 import redis
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from service import db
@@ -334,7 +334,7 @@ def remove_job(job_id: str) -> dict[str, str]:
 
 
 @app.get("/api/v1/jobs/{job_id}/download", dependencies=[Depends(require_api_key)])
-def download_result(job_id: str) -> FileResponse:
+def download_result(job_id: str, format: str | None = Query(default=None)) -> FileResponse:
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
@@ -349,7 +349,16 @@ def download_result(job_id: str) -> FileResponse:
     elif job.get("task_type") == "evaluate":
         filename, media_type = f"{job_id}-evaluation.json", "application/json"
     else:
-        if path.suffix.lower() == ".zip":
-            path = legacy_inference_csv(path)
-        filename, media_type = f"{job_id}-inference.csv", "text/csv; charset=utf-8"
+        if format == "csv":
+            if path.suffix.lower() == ".zip":
+                csv_path = path.with_name("inference-results.csv")
+                path = csv_path if csv_path.is_file() else legacy_inference_csv(path)
+            filename, media_type = f"{job_id}-inference.csv", "text/csv; charset=utf-8"
+        else:
+            if path.suffix.lower() != ".zip":
+                zip_path = path.with_name("inference-images.zip")
+                if not zip_path.is_file():
+                    raise HTTPException(status_code=404, detail="annotated image ZIP not found")
+                path = zip_path
+            filename, media_type = f"{job_id}-inference-images.zip", "application/zip"
     return FileResponse(path, filename=filename, media_type=media_type)

@@ -393,6 +393,8 @@ def run_inference(job_id: str) -> None:
             write_worker_status("inferring", job_id, phase=f"跳过损坏图片 {len(skipped)} 张")
         model = YOLO(str(model_path_for_job(job)))
         result_path = result_dir / "inference-results.csv"
+        annotated_dir = result_dir / "images"
+        archive_result = result_dir / "inference-images.zip"
         batch_size = DEFAULT_BATCH_SIZE
         with result_path.open("w", encoding="utf-8-sig", newline="") as stream:
             output = csv.writer(stream)
@@ -414,10 +416,19 @@ def run_inference(job_id: str) -> None:
                     verbose=False,
                 )
                 for image, result in zip(batch, results):
-                    write_inference_result_rows(output, result, image.relative_to(work_dir))
+                    relative_image = image.relative_to(work_dir)
+                    write_inference_result_rows(output, result, relative_image)
+                    target = annotated_dir / relative_image
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    Image.fromarray(result.plot()[:, :, ::-1]).save(target)
                 db.update_job(job_id, completed=min(offset + len(batch), len(images)), failed=len(skipped))
                 write_worker_status("inferring", job_id, phase=f"推理图片 {min(offset + len(batch), len(images))}/{len(images)}")
+        with zipfile.ZipFile(archive_result, "w", zipfile.ZIP_DEFLATED) as package:
+            for image in images:
+                target = annotated_dir / image.relative_to(work_dir)
+                package.write(target, target.relative_to(result_dir))
         db.update_job(job_id, status="completed", completed=len(images), failed=len(skipped), finished_at=db.now(), result_path=str(result_path))
+        db.update_job(job_id, result_path=str(archive_result))
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
         db.update_job(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
