@@ -18,6 +18,7 @@
 - SQLite 保存任务状态，不需要单独部署 PostgreSQL
 - 训练完成后提供 `best.pt`、`last.pt` 下载
 - 支持取消任务、删除任务和人工管理任务数据
+- 推理遇到损坏图片时自动跳过，并在结果 `summary.json` 中记录文件名和原因
 - 所有服务通过 Docker Compose 运行，不污染宿主机 Python/Node 环境
 
 ## 架构
@@ -32,12 +33,12 @@ yolo-web (Nginx + Vue, :8080)
 yolo-api (FastAPI) ---> SQLite (/data/app.db)
   |
   v
-Redis ---> yolo-worker (Ultralytics + NVIDIA GPU)
+Redis ---> yolo-worker-1 / yolo-worker-2 (Ultralytics + NVIDIA GPU)
 
 yolo-cleaner ---> 保留为独立容器，当前不自动删除用户数据
 ```
 
-共 5 个容器：`yolo-web`、`yolo-api`、`yolo-worker`、`yolo-cleaner`、`redis`。SQLite 是 API 容器挂载的数据文件，不是独立容器。
+共 6 个容器：`yolo-web`、`yolo-api`、`yolo-worker-1`、`yolo-worker-2`、`yolo-cleaner`、`redis`。两个 Worker 共享 Redis 队列，可并行处理不同任务；SQLite 是 API 容器挂载的数据文件，不是独立容器。
 
 ## 环境要求
 
