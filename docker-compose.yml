@@ -45,6 +45,7 @@ services:
       IMGSZ: "640"
       BATCH_SIZE: "32"
       CONFIDENCE: "0.25"
+      DATALOADER_WORKERS: "2"
     volumes:
       - ./data:/data
     deploy:

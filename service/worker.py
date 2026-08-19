@@ -24,6 +24,7 @@ DEVICE = os.getenv("DEVICE", "0")
 DEFAULT_IMGSZ = int(os.getenv("IMGSZ", "640"))
 DEFAULT_BATCH_SIZE = int(os.getenv("BATCH_SIZE", "32"))
 DEFAULT_CONFIDENCE = float(os.getenv("CONFIDENCE", "0.25"))
+DATALOADER_WORKERS = int(os.getenv("DATALOADER_WORKERS", "2"))
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
@@ -240,6 +241,7 @@ def run_training(job_id: str) -> None:
             epochs=epochs,
             imgsz=resolve_imgsz(job["imgsz"], data_path.parent),
             batch=int(job["train_batch"] or 16),
+            workers=DATALOADER_WORKERS,
             device=DEVICE,
             project=str(result_dir),
             name="run",
