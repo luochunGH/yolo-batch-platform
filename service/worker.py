@@ -216,15 +216,19 @@ def run_training(job_id: str) -> None:
     try:
         epochs = int(job["epochs"] or 50)
         db.update_job(job_id, status="running", started_at=db.now(), completed=0, total=epochs, error=None)
+        write_worker_status("training", job_id, phase="准备训练环境")
         work_dir.mkdir(parents=True, exist_ok=True)
         result_dir.mkdir(parents=True, exist_ok=True)
         model_dir.mkdir(parents=True, exist_ok=True)
+        write_worker_status("training", job_id, phase="解压数据集")
         safe_extract(archive, work_dir)
+        write_worker_status("training", job_id, phase="校验标注数据")
         data_path, image_count, class_count = prepare_training_dataset(work_dir)
         db.update_job(job_id, dataset_path=str(data_path), total=epochs)
-        write_worker_status("training", job_id, image_count=image_count, class_count=class_count, epoch=0, epochs=epochs)
+        write_worker_status("training", job_id, phase="加载基础模型", image_count=image_count, class_count=class_count, epoch=0, epochs=epochs)
         base_model = model_path_for(job.get("model"))
         model = YOLO(str(base_model))
+        write_worker_status("training", job_id, phase="开始训练", image_count=image_count, class_count=class_count, epoch=0, epochs=epochs)
 
         def on_epoch_end(trainer: object) -> None:
             epoch = int(getattr(trainer, "epoch", 0)) + 1
@@ -233,7 +237,7 @@ def run_training(job_id: str) -> None:
                 setattr(trainer, "stop", True)
                 return
             db.update_job(job_id, completed=min(epoch, epochs))
-            write_worker_status("training", job_id, image_count=image_count, class_count=class_count, epoch=epoch, epochs=epochs)
+            write_worker_status("training", job_id, phase=f"训练 Epoch {epoch}/{epochs}", image_count=image_count, class_count=class_count, epoch=epoch, epochs=epochs)
 
         model.add_callback("on_fit_epoch_end", on_epoch_end)
         model.train(
@@ -258,6 +262,7 @@ def run_training(job_id: str) -> None:
         last_path = run_dir / "weights" / "last.pt"
         if not best_path.exists():
             raise FileNotFoundError("training completed without best.pt")
+        write_worker_status("training", job_id, phase="保存模型", image_count=image_count, class_count=class_count, epoch=epochs, epochs=epochs)
         artifact_path = model_dir / "best.pt"
         shutil.copy2(best_path, artifact_path)
         if last_path.exists():
@@ -284,8 +289,9 @@ def run_evaluation(job_id: str) -> None:
         safe_extract(archive, work_dir)
         data_path, image_count, class_count = prepare_training_dataset(work_dir)
         db.update_job(job_id, dataset_path=str(data_path), total=image_count, completed=0)
-        write_worker_status("evaluating", job_id, image_count=image_count, class_count=class_count)
+        write_worker_status("evaluating", job_id, phase="准备评估环境", image_count=image_count, class_count=class_count)
         model = YOLO(str(model_path_for_job(job)))
+        write_worker_status("evaluating", job_id, phase="加载模型", image_count=image_count, class_count=class_count)
         metrics = model.val(
             data=str(data_path),
             imgsz=resolve_imgsz(job["imgsz"], data_path.parent),
@@ -364,7 +370,7 @@ def run_inference(job_id: str) -> None:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     Image.fromarray(result.plot()[:, :, ::-1]).save(target)
             db.update_job(job_id, completed=min(offset + len(batch), len(images)))
-            write_worker_status("inferring", job_id)
+            write_worker_status("inferring", job_id, phase=f"推理图片 {min(offset + len(batch), len(images))}/{len(images)}")
         summary_path = result_dir / "summary.json"
         db.write_json(summary_path, {"job_id": job_id, "total": len(images), "completed_at": db.now()})
         archive_result = result_dir / "inference-results.zip"
