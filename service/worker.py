@@ -1,4 +1,5 @@
 import csv
+import gc
 import json
 import os
 import os.path
@@ -448,6 +449,19 @@ def run_job(job_id: str) -> None:
         run_inference(job_id)
 
 
+def release_gpu_memory() -> None:
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
 def main() -> None:
     db.initialize()
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -461,7 +475,10 @@ def main() -> None:
     while True:
         item = redis_client.blpop(QUEUE_KEY, timeout=10)
         if item:
-            run_job(item[1])
+            try:
+                run_job(item[1])
+            finally:
+                release_gpu_memory()
         else:
             write_worker_status("idle")
 
