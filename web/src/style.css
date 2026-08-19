@@ -89,6 +89,14 @@ dl { margin: 26px 0 0; }
 dl div { display: flex; justify-content: space-between; gap: 20px; padding: 13px 0; border-top: 1px solid #edf1f6; }
 dt { color: #8795a8; font-size: 13px; }
 dd { margin: 0; color: #31415d; font-size: 13px; font-weight: 700; }
+.worker-runs { display: grid; gap: 12px; margin-top: 24px; border-top: 1px solid #edf1f6; padding-top: 17px; }
+.worker-run { min-width: 0; padding: 11px 12px; border: 1px solid #e1e9f5; border-radius: 5px; background: #f8fbff; }
+.worker-run.idle { background: #fafcff; }
+.worker-run-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: #253655; font-size: 13px; }
+.worker-run-title span { min-width: 0; overflow: hidden; color: #4772c7; font-size: 12px; font-weight: 700; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.worker-run.idle .worker-run-title span { color: #8492a6; }
+.worker-run p { margin: 7px 0 8px; overflow: hidden; color: #71829b; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.mini-progress { height: 7px; overflow: hidden; border-radius: 5px; background: #e8edf5; }
 .cleanup-note { display: grid; gap: 5px; margin-top: 14px; padding: 13px; border-radius: 5px; background: #f5f8fd; color: #63748d; font-size: 12px; line-height: 1.6; }
 .cleanup-note b { color: #3d5682; }
 .table { min-width: 0; }
