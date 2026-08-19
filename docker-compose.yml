@@ -24,6 +24,12 @@ services:
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
       MAX_UPLOAD_GB: "20"
+      MAX_ARCHIVE_FILES: "100000"
+      MAX_EXTRACT_GB: "100"
+      MAX_ARCHIVE_FILE_GB: "10"
+      MIN_DISK_FREE_GB: "10"
+      MAX_COMPRESSION_RATIO: "100"
+      DOWNLOAD_TOKEN_TTL_SECONDS: "300"
     volumes:
       - ./data:/data
     depends_on:
@@ -46,6 +52,8 @@ services:
       BATCH_SIZE: "32"
       CONFIDENCE: "0.25"
       DATALOADER_WORKERS: "2"
+      LEASE_SECONDS: "60"
+      HEARTBEAT_SECONDS: "10"
     volumes:
       - ./data:/data
     deploy:
@@ -76,6 +84,8 @@ services:
       CONFIDENCE: "0.25"
       DATALOADER_WORKERS: "2"
       WORKER_ID: worker-2
+      LEASE_SECONDS: "60"
+      HEARTBEAT_SECONDS: "10"
     volumes:
       - ./data:/data
     deploy:

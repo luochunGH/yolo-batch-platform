@@ -157,10 +157,10 @@ const App = {
     const cancel = async (id: string) => { await request(`/jobs/${id}/cancel`, { method: 'POST' }); await refresh() }
     const remove = async (id: string) => { if (confirm('确定删除该任务及其结果文件吗？')) { await request(`/jobs/${id}`, { method: 'DELETE' }); await refresh() } }
     const download = async (job: Job, format = '') => {
-      const response = await request(`/jobs/${job.id}/download${format ? `?format=${format}` : ''}`)
-      const blob = await response.blob(); const url = URL.createObjectURL(blob)
-      const suffix = job.task_type === 'train' ? 'best.pt' : job.task_type === 'evaluate' ? 'evaluation.json' : (format === 'csv' ? 'inference.csv' : 'inference-images.zip')
-      const link = document.createElement('a'); link.href = url; link.download = `${job.name}-${suffix}`; link.click(); URL.revokeObjectURL(url)
+      const query = format ? `?format=${encodeURIComponent(format)}` : ''
+      const tokenResponse = await request(`/jobs/${job.id}/download-token${query}`, { method: 'POST' })
+      const { token } = await tokenResponse.json()
+      window.location.assign(`/api/v1/jobs/${job.id}/download${query ? `${query}&` : '?'}token=${encodeURIComponent(token)}`)
     }
     const modelLabel = (job: Job) => job.task_type === 'train' ? job.model : trainedModels.value.find((item: any) => item.id === job.model_id)?.name || '已训练模型'
     onMounted(() => { refresh(); window.setInterval(refresh, 2000) })

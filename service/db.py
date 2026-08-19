@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +66,9 @@ def initialize() -> None:
             "dataset_path": "TEXT",
             "artifact_path": "TEXT",
             "model_id": "TEXT",
+            "attempt_id": "TEXT",
+            "resume_count": "INTEGER NOT NULL DEFAULT 0",
+            "oom_retries": "INTEGER NOT NULL DEFAULT 0",
         }
         existing = {row[1] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
         for column, definition in migrations.items():
@@ -115,6 +119,32 @@ def delete_job(job_id: str) -> None:
         db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 
 
+def claim_job(job_id: str, attempt_id: str) -> bool:
+    with connection() as db:
+        result = db.execute(
+            "UPDATE jobs SET status = 'running', attempt_id = ?, started_at = ?, finished_at = NULL, error = NULL "
+            "WHERE id = ? AND status = 'queued'",
+            (attempt_id, now(), job_id),
+        )
+    return result.rowcount == 1
+
+
+def update_attempt(job_id: str, attempt_id: str, **values: object) -> bool:
+    if not values:
+        return False
+    columns = ", ".join(f"{key} = ?" for key in values)
+    with connection() as db:
+        result = db.execute(
+            f"UPDATE jobs SET {columns} WHERE id = ? AND attempt_id = ? AND status IN ('running', 'cancelling')",
+            (*values.values(), job_id, attempt_id),
+        )
+    return result.rowcount == 1
+
+
+def new_attempt_id() -> str:
+    return uuid.uuid4().hex
+
+
 def dashboard() -> dict[str, object]:
     with connection() as db:
         rows = db.execute("SELECT status, COUNT(*) AS count FROM jobs GROUP BY status").fetchall()
@@ -125,4 +155,10 @@ def dashboard() -> dict[str, object]:
 
 
 def write_json(path: Path, payload: object) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    with temporary.open("r+", encoding="utf-8") as stream:
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)

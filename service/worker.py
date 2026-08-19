@@ -6,6 +6,7 @@ import os.path
 import re
 import shutil
 import subprocess
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -19,7 +20,14 @@ from service import db
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-QUEUE_KEY = "yolo:jobs"
+TRAIN_QUEUE_KEY = "yolo:jobs:train"
+NONTRAIN_QUEUE_KEY = "yolo:jobs:nontrain"
+PROCESSING_PREFIX = "yolo:jobs:processing:"
+LEASE_PREFIX = "yolo:lease:job:"
+HEARTBEAT_PREFIX = "yolo:heartbeat:job:"
+TRAINING_LEASE_KEY = "yolo:lease:training"
+LEASE_SECONDS = int(os.getenv("LEASE_SECONDS", "60"))
+HEARTBEAT_SECONDS = int(os.getenv("HEARTBEAT_SECONDS", "10"))
 MODEL_PATH = Path(os.getenv("MODEL_PATH", "/data/models/yolo11n.pt"))
 MODEL_NAME = os.getenv("MODEL_NAME", "yolo11n.pt")
 DEVICE = os.getenv("DEVICE", "0")
@@ -30,6 +38,73 @@ DATALOADER_WORKERS = int(os.getenv("DATALOADER_WORKERS", "2"))
 WORKER_ID = os.getenv("WORKER_ID", "worker-1")
 STATUS_PATH = db.DATA_DIR / ("worker-status.json" if WORKER_ID == "worker-1" else f"worker-status-{WORKER_ID}.json")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def queue_key_for(task_type: object) -> str:
+    return TRAIN_QUEUE_KEY if task_type == "train" else NONTRAIN_QUEUE_KEY
+
+
+def processing_key_for(task_type: object) -> str:
+    return f"{PROCESSING_PREFIX}{'train' if task_type == 'train' else 'nontrain'}"
+
+
+def update_attempt(job_id: str, **values: object) -> bool:
+    attempt_id = _attempts.get(job_id)
+    return bool(attempt_id and db.update_attempt(job_id, attempt_id, **values))
+
+
+_attempts: dict[str, str] = {}
+
+
+def owns_attempt(job: dict[str, object] | None, job_id: str) -> bool:
+    return bool(job and job.get("status") in {"running", "cancelling"} and job.get("attempt_id") == _attempts.get(job_id))
+
+
+class JobLease:
+    def __init__(self, redis_client: redis.Redis, job_id: str, attempt_id: str, task_type: object) -> None:
+        self.redis_client, self.job_id, self.attempt_id, self.task_type = redis_client, job_id, attempt_id, task_type
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._renew, daemon=True)
+
+    def _renew(self) -> None:
+        payload = json.dumps({"worker_id": WORKER_ID, "job_id": self.job_id, "attempt_id": self.attempt_id, "task_type": self.task_type, "updated_at": db.now()})
+        while not self.stop.wait(HEARTBEAT_SECONDS):
+            try:
+                renewed = self.redis_client.eval(
+                    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end",
+                    1, f"{LEASE_PREFIX}{self.job_id}", self.attempt_id, LEASE_SECONDS,
+                )
+                if not renewed:
+                    return
+                self.redis_client.set(f"{HEARTBEAT_PREFIX}{self.job_id}", payload, ex=LEASE_SECONDS)
+                if self.task_type == "train":
+                    self.redis_client.eval(
+                        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end",
+                        1, TRAINING_LEASE_KEY, self.attempt_id, LEASE_SECONDS,
+                    )
+            except redis.RedisError:
+                pass
+
+    def __enter__(self) -> "JobLease":
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.stop.set()
+        self.thread.join(timeout=HEARTBEAT_SECONDS + 1)
+        try:
+            self.redis_client.eval(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                1, f"{LEASE_PREFIX}{self.job_id}", self.attempt_id,
+            )
+            self.redis_client.delete(f"{HEARTBEAT_PREFIX}{self.job_id}")
+            if self.task_type == "train":
+                self.redis_client.eval(
+                    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                    1, TRAINING_LEASE_KEY, self.attempt_id,
+                )
+        except redis.RedisError:
+            pass
 
 
 def model_path_for(name: object) -> Path:
@@ -245,7 +320,7 @@ def prepare_training_dataset(work_dir: Path) -> tuple[Path, int, int]:
     return normalized_path, len(image_paths), len(names)
 
 
-def run_training(job_id: str) -> None:
+def run_training(job_id: str, redis_client: redis.Redis) -> None:
     job = db.get_job(job_id)
     if not job or job["status"] == "cancelled":
         return
@@ -255,50 +330,47 @@ def run_training(job_id: str) -> None:
     model_dir = db.DATA_DIR / "models" / job_id
     try:
         epochs = int(job["epochs"] or 50)
-        db.update_job(job_id, status="running", started_at=db.now(), completed=0, total=epochs, error=None)
+        run_dir = result_dir / "run"
+        resume_path = run_dir / "weights" / "last.pt"
+        resuming = resume_path.is_file()
+        update_attempt(job_id, total=epochs, error=None)
         write_worker_status("training", job_id, phase="准备训练环境")
         work_dir.mkdir(parents=True, exist_ok=True)
         result_dir.mkdir(parents=True, exist_ok=True)
         model_dir.mkdir(parents=True, exist_ok=True)
-        write_worker_status("training", job_id, phase="解压数据集")
+        write_worker_status("training", job_id, phase="恢复训练数据" if resuming else "解压数据集")
         safe_extract(archive, work_dir)
         write_worker_status("training", job_id, phase="校验标注数据")
         data_path, image_count, class_count = prepare_training_dataset(work_dir)
-        db.update_job(job_id, dataset_path=str(data_path), total=epochs)
-        write_worker_status("training", job_id, phase="加载基础模型", image_count=image_count, class_count=class_count, epoch=0, epochs=epochs)
-        base_model = model_path_for(job.get("model"))
+        update_attempt(job_id, dataset_path=str(data_path), total=epochs)
+        completed = int(job.get("completed") or 0) if resuming else 0
+        write_worker_status("training", job_id, phase=f"从 Epoch {completed}/{epochs} 恢复训练" if resuming else "加载基础模型", image_count=image_count, class_count=class_count, epoch=completed, epochs=epochs)
+        base_model = resume_path if resuming else model_path_for(job.get("model"))
         model = YOLO(str(base_model))
         write_worker_status("training", job_id, phase="检查训练环境", image_count=image_count, class_count=class_count, epoch=0, epochs=epochs)
 
         def on_epoch_end(trainer: object) -> None:
             epoch = int(getattr(trainer, "epoch", 0)) + 1
             current = db.get_job(job_id)
-            if not current or current["status"] in {"cancelling", "cancelled"}:
+            if not owns_attempt(current, job_id) or current["status"] in {"cancelling", "cancelled"}:
                 setattr(trainer, "stop", True)
                 return
-            db.update_job(job_id, completed=min(epoch, epochs))
+            update_attempt(job_id, completed=min(epoch, epochs))
             write_worker_status("training", job_id, phase=f"训练 Epoch {epoch}/{epochs}", image_count=image_count, class_count=class_count, epoch=epoch, epochs=epochs)
 
         model.add_callback("on_fit_epoch_end", on_epoch_end)
-        model.train(
-            data=str(data_path),
-            epochs=epochs,
-            imgsz=resolve_imgsz(job["imgsz"], data_path.parent),
-            batch=int(job["train_batch"] or 16),
-            workers=DATALOADER_WORKERS,
-            device=DEVICE,
-            amp=False,
-            project=str(result_dir),
-            name="run",
-            exist_ok=True,
-            plots=True,
-            verbose=False,
-        )
+        if resuming:
+            model.train(resume=str(resume_path))
+        else:
+            model.train(
+                data=str(data_path), epochs=epochs, imgsz=resolve_imgsz(job["imgsz"], data_path.parent),
+                batch=int(job["train_batch"] or 16), workers=DATALOADER_WORKERS, device=DEVICE, amp=False,
+                project=str(result_dir), name="run", exist_ok=True, plots=True, verbose=False,
+            )
         current = db.get_job(job_id)
         if not current or current["status"] in {"cancelling", "cancelled"}:
-            db.update_job(job_id, status="cancelled", finished_at=db.now())
+            update_attempt(job_id, status="cancelled", finished_at=db.now())
             return
-        run_dir = result_dir / "run"
         best_path = run_dir / "weights" / "best.pt"
         last_path = run_dir / "weights" / "last.pt"
         if not best_path.exists():
@@ -308,10 +380,27 @@ def run_training(job_id: str) -> None:
         shutil.copy2(best_path, artifact_path)
         if last_path.exists():
             shutil.copy2(last_path, model_dir / "last.pt")
-        db.update_job(job_id, status="completed", completed=epochs, finished_at=db.now(), result_path=str(run_dir), artifact_path=str(artifact_path))
+        update_attempt(job_id, status="completed", completed=epochs, finished_at=db.now(), result_path=str(run_dir), artifact_path=str(artifact_path))
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
-        db.update_job(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
+        message = str(exc)
+        if "out of memory" in message.lower() and int(job.get("oom_retries") or 0) < 1:
+            reduced_batch = max(1, int(job.get("train_batch") or 1) // 2)
+            if update_attempt(
+                job_id,
+                status="queued",
+                train_batch=reduced_batch,
+                oom_retries=int(job.get("oom_retries") or 0) + 1,
+                attempt_id=None,
+                started_at=None,
+                error=f"CUDA OOM，已自动将 Batch Size 降至 {reduced_batch} 后重新排队",
+            ):
+                try:
+                    redis_client.rpush(TRAIN_QUEUE_KEY, job_id)
+                    return
+                except redis.RedisError:
+                    pass
+        update_attempt(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
     finally:
         write_worker_status("idle")
 
@@ -324,12 +413,11 @@ def run_evaluation(job_id: str) -> None:
     work_dir = db.DATA_DIR / "work" / job_id
     result_dir = db.DATA_DIR / "results" / job_id
     try:
-        db.update_job(job_id, status="running", started_at=db.now(), error=None)
         work_dir.mkdir(parents=True, exist_ok=True)
         result_dir.mkdir(parents=True, exist_ok=True)
         safe_extract(archive, work_dir)
         data_path, image_count, class_count = prepare_training_dataset(work_dir)
-        db.update_job(job_id, dataset_path=str(data_path), total=image_count, completed=0)
+        update_attempt(job_id, dataset_path=str(data_path), total=image_count, completed=0)
         write_worker_status("evaluating", job_id, phase="准备评估环境", image_count=image_count, class_count=class_count)
         model = YOLO(str(model_path_for_job(job)))
         write_worker_status("evaluating", job_id, phase="加载模型", image_count=image_count, class_count=class_count)
@@ -362,10 +450,10 @@ def run_evaluation(job_id: str) -> None:
         }
         report_path = result_dir / "evaluation.json"
         db.write_json(report_path, report)
-        db.update_job(job_id, status="completed", completed=image_count, finished_at=db.now(), result_path=str(report_path))
+        update_attempt(job_id, status="completed", completed=image_count, finished_at=db.now(), result_path=str(report_path))
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
-        db.update_job(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
+        update_attempt(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
     finally:
         write_worker_status("idle")
 
@@ -378,7 +466,6 @@ def run_inference(job_id: str) -> None:
     work_dir = db.DATA_DIR / "work" / job_id
     result_dir = db.DATA_DIR / "results" / job_id
     try:
-        db.update_job(job_id, status="running", started_at=db.now(), error=None)
         work_dir.mkdir(parents=True, exist_ok=True)
         result_dir.mkdir(parents=True, exist_ok=True)
         safe_extract(archive, work_dir)
@@ -389,7 +476,7 @@ def run_inference(job_id: str) -> None:
         total_images = len(images) + len(skipped)
         if not images:
             raise ValueError(f"all {total_images} images are unreadable")
-        db.update_job(job_id, total=total_images, completed=0, failed=len(skipped))
+        update_attempt(job_id, total=total_images, completed=0, failed=len(skipped))
         if skipped:
             write_worker_status("inferring", job_id, phase=f"跳过损坏图片 {len(skipped)} 张")
         model = YOLO(str(model_path_for_job(job)))
@@ -404,8 +491,8 @@ def run_inference(job_id: str) -> None:
                 output.writerow([skipped_image["image"], "已跳过", "", "", "", "", "", "", "", skipped_image["reason"]])
             for offset in range(0, len(images), batch_size):
                 current = db.get_job(job_id)
-                if not current or current["status"] in {"cancelling", "cancelled"}:
-                    db.update_job(job_id, status="cancelled", finished_at=db.now())
+                if not owns_attempt(current, job_id) or current["status"] in {"cancelling", "cancelled"}:
+                    update_attempt(job_id, status="cancelled", finished_at=db.now())
                     return
                 batch = images[offset : offset + batch_size]
                 results = model.predict(
@@ -422,27 +509,26 @@ def run_inference(job_id: str) -> None:
                     target = annotated_dir / relative_image
                     target.parent.mkdir(parents=True, exist_ok=True)
                     Image.fromarray(result.plot()[:, :, ::-1]).save(target)
-                db.update_job(job_id, completed=min(offset + len(batch), len(images)), failed=len(skipped))
+                update_attempt(job_id, completed=min(offset + len(batch), len(images)), failed=len(skipped))
                 write_worker_status("inferring", job_id, phase=f"推理图片 {min(offset + len(batch), len(images))}/{len(images)}")
         with zipfile.ZipFile(archive_result, "w", zipfile.ZIP_DEFLATED) as package:
             for image in images:
                 target = annotated_dir / image.relative_to(work_dir)
                 package.write(target, target.relative_to(result_dir))
-        db.update_job(job_id, status="completed", completed=len(images), failed=len(skipped), finished_at=db.now(), result_path=str(result_path))
-        db.update_job(job_id, result_path=str(archive_result))
+        update_attempt(job_id, status="completed", completed=len(images), failed=len(skipped), finished_at=db.now(), result_path=str(archive_result))
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
-        db.update_job(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
+        update_attempt(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
     finally:
         write_worker_status("idle")
 
 
-def run_job(job_id: str) -> None:
+def run_job(job_id: str, redis_client: redis.Redis) -> None:
     job = db.get_job(job_id)
     if not job or job["status"] == "cancelled":
         return
     if job.get("task_type") == "train":
-        run_training(job_id)
+        run_training(job_id, redis_client)
     elif job.get("task_type") == "evaluate":
         run_evaluation(job_id)
     else:
@@ -474,37 +560,69 @@ def active_worker_job_ids() -> set[str]:
     return job_ids
 
 
-def preserve_interrupted_run(job_id: str) -> None:
-    run_dir = db.DATA_DIR / "results" / job_id / "run"
-    if not run_dir.is_dir():
-        return
-    archived_run = run_dir.with_name(f"interrupted-{time.strftime('%Y%m%d-%H%M%S')}")
-    shutil.move(str(run_dir), str(archived_run))
-
-
 def recover_interrupted_jobs(redis_client: redis.Redis) -> None:
-    active_jobs = active_worker_job_ids()
     for job in db.list_jobs(limit=10000):
         status = str(job.get("status"))
         job_id = str(job["id"])
-        if status not in {"running", "cancelling"} or job_id in active_jobs:
+        if status not in {"running", "cancelling"}:
             continue
+        try:
+            if redis_client.exists(f"{LEASE_PREFIX}{job_id}"):
+                continue
+        except redis.RedisError:
+            return
         if not redis_client.set(f"yolo:recovery:{job_id}", "1", nx=True, ex=30):
             continue
         if status == "cancelling":
             db.update_job(job_id, status="cancelled", finished_at=db.now(), error="Worker 重启时任务正在取消")
             continue
-        preserve_interrupted_run(job_id)
         db.update_job(
             job_id,
             status="queued",
-            completed=0,
-            failed=0,
             started_at=None,
             finished_at=None,
-            error="Worker 意外重启，已从原始 ZIP 自动重新排队",
+            attempt_id=None,
+            resume_count=int(job.get("resume_count") or 0) + 1,
+            error="Worker 租约超时，任务已重新排队；若存在 last.pt 将断点续训",
         )
-        redis_client.rpush(QUEUE_KEY, job_id)
+        redis_client.rpush(queue_key_for(job.get("task_type")), job_id)
+
+
+def restore_queued_jobs(redis_client: redis.Redis) -> None:
+    for job in db.list_jobs(limit=10000):
+        if job.get("status") == "queued":
+            redis_client.rpush(queue_key_for(job.get("task_type")), str(job["id"]))
+
+
+def claim_next_job(redis_client: redis.Redis) -> tuple[str, str, object, str] | None:
+    for queue_key in (NONTRAIN_QUEUE_KEY, TRAIN_QUEUE_KEY):
+        processing_key = processing_key_for("train" if queue_key == TRAIN_QUEUE_KEY else "inference")
+        job_id = redis_client.brpoplpush(queue_key, processing_key, timeout=1)
+        if not job_id:
+            continue
+        job = db.get_job(job_id)
+        if not job or job.get("status") != "queued":
+            redis_client.lrem(processing_key, 1, job_id)
+            continue
+        task_type = job.get("task_type")
+        attempt_id = db.new_attempt_id()
+        if task_type == "train" and not redis_client.set(TRAINING_LEASE_KEY, attempt_id, nx=True, ex=LEASE_SECONDS):
+            redis_client.lrem(processing_key, 1, job_id)
+            redis_client.rpush(queue_key, job_id)
+            continue
+        if not db.claim_job(job_id, attempt_id):
+            redis_client.lrem(processing_key, 1, job_id)
+            if task_type == "train":
+                redis_client.delete(TRAINING_LEASE_KEY)
+            continue
+        redis_client.set(f"{LEASE_PREFIX}{job_id}", attempt_id, ex=LEASE_SECONDS)
+        redis_client.set(
+            f"{HEARTBEAT_PREFIX}{job_id}",
+            json.dumps({"worker_id": WORKER_ID, "job_id": job_id, "attempt_id": attempt_id, "task_type": task_type, "updated_at": db.now()}),
+            ex=LEASE_SECONDS,
+        )
+        return job_id, attempt_id, task_type, processing_key
+    return None
 
 
 def main() -> None:
@@ -513,12 +631,27 @@ def main() -> None:
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     write_worker_status("idle")
     recover_interrupted_jobs(redis_client)
+    restore_queued_jobs(redis_client)
     while True:
-        item = redis_client.blpop(QUEUE_KEY, timeout=10)
+        try:
+            recover_interrupted_jobs(redis_client)
+            item = claim_next_job(redis_client)
+        except redis.RedisError:
+            write_worker_status("idle", phase="Redis 暂时不可用，正在重试")
+            time.sleep(HEARTBEAT_SECONDS)
+            continue
         if item:
+            job_id, attempt_id, task_type, processing_key = item
+            _attempts[job_id] = attempt_id
             try:
-                run_job(item[1])
+                with JobLease(redis_client, job_id, attempt_id, task_type):
+                    run_job(job_id, redis_client)
             finally:
+                _attempts.pop(job_id, None)
+                try:
+                    redis_client.lrem(processing_key, 1, job_id)
+                except redis.RedisError:
+                    pass
                 release_gpu_memory()
         else:
             write_worker_status("idle")

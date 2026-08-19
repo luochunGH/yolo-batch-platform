@@ -19,7 +19,15 @@ from service import db
 API_KEY = os.getenv("API_KEY", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 MAX_UPLOAD_GB = int(os.getenv("MAX_UPLOAD_GB", "20"))
-QUEUE_KEY = "yolo:jobs"
+MAX_ARCHIVE_FILES = int(os.getenv("MAX_ARCHIVE_FILES", "100000"))
+MAX_EXTRACT_GB = int(os.getenv("MAX_EXTRACT_GB", "100"))
+MAX_ARCHIVE_FILE_GB = int(os.getenv("MAX_ARCHIVE_FILE_GB", "10"))
+MIN_DISK_FREE_GB = int(os.getenv("MIN_DISK_FREE_GB", "10"))
+MAX_COMPRESSION_RATIO = int(os.getenv("MAX_COMPRESSION_RATIO", "100"))
+TRAIN_QUEUE_KEY = "yolo:jobs:train"
+NONTRAIN_QUEUE_KEY = "yolo:jobs:nontrain"
+DOWNLOAD_TOKEN_PREFIX = "yolo:download:"
+DOWNLOAD_TOKEN_TTL = int(os.getenv("DOWNLOAD_TOKEN_TTL_SECONDS", "300"))
 MODEL_NAMES = ("yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt")
 NAME_SUFFIX_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -87,7 +95,20 @@ def unique_job_name(requested: str, fallback: str) -> str:
 
 
 def validate_archive_names(package: zipfile.ZipFile) -> None:
-    for item in package.infolist():
+    entries = package.infolist()
+    if len(entries) > MAX_ARCHIVE_FILES:
+        raise ValueError("archive contains too many files")
+    total_size = sum(item.file_size for item in entries)
+    if total_size > MAX_EXTRACT_GB * 1024**3:
+        raise ValueError("archive expands beyond the allowed size")
+    if any(item.file_size > MAX_ARCHIVE_FILE_GB * 1024**3 for item in entries):
+        raise ValueError("archive contains an oversized file")
+    for item in entries:
+        if item.file_size and item.compress_size and item.file_size / item.compress_size > MAX_COMPRESSION_RATIO:
+            raise ValueError("archive compression ratio is too high")
+    if shutil.disk_usage(db.DATA_DIR).free < total_size + MIN_DISK_FREE_GB * 1024**3:
+        raise ValueError("insufficient disk space to extract archive safely")
+    for item in entries:
         if Path(item.filename).is_absolute() or ".." in Path(item.filename).parts:
             raise ValueError("archive contains an unsafe path")
 
@@ -145,6 +166,17 @@ def normalize_imgsz(value: str) -> str:
     raise HTTPException(status_code=422, detail="imgsz must be original, 320-4096, or WIDTHxHEIGHT")
 
 
+def queue_key_for(task_type: str) -> str:
+    return TRAIN_QUEUE_KEY if task_type == "train" else NONTRAIN_QUEUE_KEY
+
+
+def enqueue_job(job_id: str, task_type: str) -> None:
+    try:
+        queue.rpush(queue_key_for(task_type), job_id)
+    except redis.RedisError as exc:
+        raise HTTPException(status_code=503, detail="Redis queue is unavailable; task was not created") from exc
+
+
 @app.get("/api/v1/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -154,7 +186,12 @@ def health() -> dict[str, str]:
 def get_dashboard() -> dict[str, object]:
     usage = shutil.disk_usage(db.DATA_DIR)
     status_paths = sorted(db.DATA_DIR.glob("worker-status*.json"))
-    worker_statuses = [json.loads(path.read_text(encoding="utf-8")) for path in status_paths]
+    worker_statuses = []
+    for path in status_paths:
+        try:
+            worker_statuses.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
     worker_status = dict(next((item for item in worker_statuses if item.get("state") not in {"idle", None}), worker_statuses[0] if worker_statuses else {}))
     worker_status["workers"] = worker_statuses
     return {
@@ -249,7 +286,12 @@ async def create_job(
         "artifact_path": None,
     }
     db.create_job(job)
-    queue.rpush(QUEUE_KEY, job_id)
+    try:
+        enqueue_job(job_id, task_type)
+    except HTTPException:
+        db.delete_job(job_id)
+        archive_path.unlink(missing_ok=True)
+        raise
     return job_payload({**job, "total": epochs if task_type == "train" else image_count, "completed": 0, "failed": 0})
 
 
@@ -299,7 +341,12 @@ def retry_job(
         "artifact_path": None,
     }
     db.create_job(job)
-    queue.rpush(QUEUE_KEY, job_id)
+    try:
+        enqueue_job(job_id, "train")
+    except HTTPException:
+        db.delete_job(job_id)
+        archive_path.unlink(missing_ok=True)
+        raise
     return job_payload({**job, "total": selected_epochs, "completed": 0, "failed": 0, "source_job_id": source_job_id})
 
 
@@ -333,8 +380,36 @@ def remove_job(job_id: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-@app.get("/api/v1/jobs/{job_id}/download", dependencies=[Depends(require_api_key)])
-def download_result(job_id: str, format: str | None = Query(default=None)) -> FileResponse:
+@app.post("/api/v1/jobs/{job_id}/download-token", dependencies=[Depends(require_api_key)])
+def create_download_token(job_id: str, format: str | None = Query(default=None)) -> dict[str, str | int]:
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    token = secrets.token_urlsafe(32)
+    try:
+        queue.setex(f"{DOWNLOAD_TOKEN_PREFIX}{token}", DOWNLOAD_TOKEN_TTL, json.dumps({"job_id": job_id, "format": format or ""}))
+    except redis.RedisError as exc:
+        raise HTTPException(status_code=503, detail="download token service is unavailable") from exc
+    return {"token": token, "expires_in": DOWNLOAD_TOKEN_TTL}
+
+
+def consume_download_token(token: str | None, job_id: str, format: str | None) -> None:
+    if not token:
+        raise HTTPException(status_code=401, detail="download token is required")
+    try:
+        raw = queue.getdel(f"{DOWNLOAD_TOKEN_PREFIX}{token}")
+    except redis.RedisError as exc:
+        raise HTTPException(status_code=503, detail="download token service is unavailable") from exc
+    if not raw:
+        raise HTTPException(status_code=401, detail="download token is invalid or expired")
+    payload = json.loads(raw)
+    if payload.get("job_id") != job_id or payload.get("format") != (format or ""):
+        raise HTTPException(status_code=401, detail="download token does not match this file")
+
+
+@app.get("/api/v1/jobs/{job_id}/download")
+def download_result(job_id: str, format: str | None = Query(default=None), token: str | None = Query(default=None)) -> FileResponse:
+    consume_download_token(token, job_id, format)
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
