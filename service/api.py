@@ -21,7 +21,7 @@ QUEUE_KEY = "yolo:jobs"
 MODEL_NAMES = ("yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-app = FastAPI(title="YOLO Batch Platform", version="1.0.0")
+app = FastAPI(title="Docker YOLO Web Console", version="1.0.0")
 queue = redis.from_url(REDIS_URL, decode_responses=True)
 
 

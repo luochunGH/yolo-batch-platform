@@ -126,7 +126,7 @@ const App = {
       </section>
     </main>
     <footer class="site-footer">
-      <span>YOLO 模型训练中心 · v1.0.0</span>
+      <span>Docker YOLO Web Console · v1.0.0</span>
       <span class="footer-separator">·</span>
       <span>MIT License</span>
       <a class="github-link" href="https://github.com/luochunGH/yolo-batch-platform" target="_blank" rel="noreferrer" title="打开 GitHub 项目" aria-label="打开 GitHub 项目">
