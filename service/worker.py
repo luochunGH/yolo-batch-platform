@@ -397,6 +397,10 @@ def main() -> None:
     db.initialize()
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    for job in db.list_jobs(limit=10000):
+        if job["status"] in {"running", "cancelling"}:
+            db.update_job(job["id"], status="queued", started_at=None, error="Worker 重启后自动重新排队")
+            redis_client.rpush(QUEUE_KEY, job["id"])
     write_worker_status("idle")
     while True:
         item = redis_client.blpop(QUEUE_KEY, timeout=10)
