@@ -416,23 +416,9 @@ def run_training(job_id: str, redis_client: redis.Redis) -> None:
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
         message = str(exc)
-        if "out of memory" in message.lower() and int(job.get("oom_retries") or 0) < 1:
-            reduced_batch = max(1, int(job.get("train_batch") or 1) // 2)
-            if update_attempt(
-                job_id,
-                status="queued",
-                train_batch=reduced_batch,
-                oom_retries=int(job.get("oom_retries") or 0) + 1,
-                attempt_id=None,
-                started_at=None,
-                error=f"CUDA OOM，已自动将 Batch Size 降至 {reduced_batch} 后重新排队",
-            ):
-                try:
-                    redis_client.rpush(TRAIN_QUEUE_KEY, job_id)
-                    return
-                except redis.RedisError:
-                    pass
-        update_attempt(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())
+        if "out of memory" in message.lower():
+            message = f"CUDA OOM，任务已失败，请人工降低输入尺寸或 Batch Size 后重新训练。原始错误：{message}"
+        update_attempt(job_id, status="failed", error=message[:1000], finished_at=db.now())
     finally:
         write_worker_status("idle")
 
@@ -678,6 +664,8 @@ def main() -> None:
             try:
                 with JobLease(redis_client, job_id, attempt_id, task_type):
                     run_job(job_id, redis_client)
+            except Exception as exc:
+                update_attempt(job_id, status="failed", error=f"Worker 未处理异常：{str(exc)[:900]}", finished_at=db.now())
             finally:
                 _attempts.pop(job_id, None)
                 try:
