@@ -33,6 +33,7 @@ services:
   yolo-worker:
     image: yolo-batch-service:1.0
     restart: unless-stopped
+    shm_size: "16gb"
     command: python -m service.worker
     user: "1000:1000"
     environment:
