@@ -16,7 +16,7 @@
 - 自动校验 `data.yaml`、图片、TXT 标签、类别编号和归一化坐标
 - Redis 队列保证网页 API 与 GPU 训练进程解耦
 - SQLite 保存任务状态，不需要单独部署 PostgreSQL
-- 训练完成后提供 `best.pt`、`last.pt` 下载
+- 训练完成后提供 `best.pt`、`last.pt` 下载；推理结果直接下载为 CSV
 - 支持取消任务、删除任务和人工管理任务数据
 - 推理遇到损坏图片时自动跳过，并在结果 `summary.json` 中记录文件名和原因
 - 所有服务通过 Docker Compose 运行，不污染宿主机 Python/Node 环境

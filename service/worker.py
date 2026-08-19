@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import os.path
@@ -126,6 +127,27 @@ def serialize_result(result: object, source: Path) -> dict[str, object]:
             }
         )
     return {"image": str(source), "detections": detections}
+
+
+def write_inference_result_rows(output: csv.writer, result: object, source: Path) -> None:
+    detections = serialize_result(result, source)["detections"]
+    if not detections:
+        output.writerow([str(source), "未检测到目标", "", "", "", "", "", "", "", ""])
+        return
+    for detection in detections:
+        x1, y1, x2, y2 = detection["box_xyxy"]
+        output.writerow([
+            str(source),
+            "已识别",
+            detection["class_id"],
+            detection["class_name"],
+            detection["confidence"],
+            x1,
+            y1,
+            x2,
+            y2,
+            "",
+        ])
 
 
 def readable_images(images: list[Path], work_dir: Path) -> tuple[list[Path], list[dict[str, str]]]:
@@ -369,40 +391,32 @@ def run_inference(job_id: str) -> None:
         if skipped:
             write_worker_status("inferring", job_id, phase=f"跳过损坏图片 {len(skipped)} 张")
         model = YOLO(str(model_path_for_job(job)))
-        result_path = result_dir / "results.jsonl"
-        annotated_dir = result_dir / "images"
+        result_path = result_dir / "inference-results.csv"
         batch_size = DEFAULT_BATCH_SIZE
-        for offset in range(0, len(images), batch_size):
-            current = db.get_job(job_id)
-            if not current or current["status"] in {"cancelling", "cancelled"}:
-                db.update_job(job_id, status="cancelled", finished_at=db.now())
-                return
-            batch = images[offset : offset + batch_size]
-            results = model.predict(
-                source=[str(image) for image in batch],
-                imgsz=resolve_imgsz(job["imgsz"]),
-                conf=float(job["confidence"] or DEFAULT_CONFIDENCE),
-                device=DEVICE,
-                half=True,
-                verbose=False,
-            )
-            with result_path.open("a", encoding="utf-8") as output:
+        with result_path.open("w", encoding="utf-8-sig", newline="") as stream:
+            output = csv.writer(stream)
+            output.writerow(["图片路径", "状态", "类别ID", "类别名称", "置信度", "x1", "y1", "x2", "y2", "说明"])
+            for skipped_image in skipped:
+                output.writerow([skipped_image["image"], "已跳过", "", "", "", "", "", "", "", skipped_image["reason"]])
+            for offset in range(0, len(images), batch_size):
+                current = db.get_job(job_id)
+                if not current or current["status"] in {"cancelling", "cancelled"}:
+                    db.update_job(job_id, status="cancelled", finished_at=db.now())
+                    return
+                batch = images[offset : offset + batch_size]
+                results = model.predict(
+                    source=[str(image) for image in batch],
+                    imgsz=resolve_imgsz(job["imgsz"]),
+                    conf=float(job["confidence"] or DEFAULT_CONFIDENCE),
+                    device=DEVICE,
+                    half=True,
+                    verbose=False,
+                )
                 for image, result in zip(batch, results):
-                    output.write(json.dumps(serialize_result(result, image.relative_to(work_dir)), ensure_ascii=False) + "\n")
-                    target = annotated_dir / image.relative_to(work_dir)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    Image.fromarray(result.plot()[:, :, ::-1]).save(target)
-            db.update_job(job_id, completed=min(offset + len(batch), len(images)), failed=len(skipped))
-            write_worker_status("inferring", job_id, phase=f"推理图片 {min(offset + len(batch), len(images))}/{len(images)}")
-        summary_path = result_dir / "summary.json"
-        db.write_json(summary_path, {"job_id": job_id, "total": total_images, "completed": len(images), "skipped": skipped, "completed_at": db.now()})
-        archive_result = result_dir / "inference-results.zip"
-        with zipfile.ZipFile(archive_result, "w", zipfile.ZIP_DEFLATED) as package:
-            for path in (annotated_dir / image.relative_to(work_dir) for image in images):
-                package.write(path, path.relative_to(result_dir))
-            package.write(result_path, result_path.name)
-            package.write(summary_path, summary_path.name)
-        db.update_job(job_id, status="completed", completed=len(images), failed=len(skipped), finished_at=db.now(), result_path=str(archive_result))
+                    write_inference_result_rows(output, result, image.relative_to(work_dir))
+                db.update_job(job_id, completed=min(offset + len(batch), len(images)), failed=len(skipped))
+                write_worker_status("inferring", job_id, phase=f"推理图片 {min(offset + len(batch), len(images))}/{len(images)}")
+        db.update_job(job_id, status="completed", completed=len(images), failed=len(skipped), finished_at=db.now(), result_path=str(result_path))
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
         db.update_job(job_id, status="failed", error=str(exc)[:1000], finished_at=db.now())

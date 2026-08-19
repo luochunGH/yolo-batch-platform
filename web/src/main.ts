@@ -149,7 +149,7 @@ const App = {
     const download = async (job: Job) => {
       const response = await request(`/jobs/${job.id}/download`)
       const blob = await response.blob(); const url = URL.createObjectURL(blob)
-      const suffix = job.task_type === 'train' ? 'best.pt' : job.task_type === 'evaluate' ? 'evaluation.json' : 'inference.zip'
+      const suffix = job.task_type === 'train' ? 'best.pt' : job.task_type === 'evaluate' ? 'evaluation.json' : 'inference.csv'
       const link = document.createElement('a'); link.href = url; link.download = `${job.name}-${suffix}`; link.click(); URL.revokeObjectURL(url)
     }
     const modelLabel = (job: Job) => job.task_type === 'train' ? job.model : trainedModels.value.find((item: any) => item.id === job.model_id)?.name || '已训练模型'

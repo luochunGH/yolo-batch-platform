@@ -1,3 +1,4 @@
+import csv
 import hmac
 import json
 import os
@@ -103,6 +104,29 @@ def validate_training_archive(package: zipfile.ZipFile) -> tuple[int, int]:
     if not labels:
         raise ValueError("training archive contains no YOLO label txt files")
     return len(images), len(labels)
+
+
+def legacy_inference_csv(archive_path: Path) -> Path:
+    csv_path = archive_path.with_name("inference-results.csv")
+    if csv_path.is_file():
+        return csv_path
+    with zipfile.ZipFile(archive_path) as package, csv_path.open("w", encoding="utf-8-sig", newline="") as stream:
+        output = csv.writer(stream)
+        output.writerow(["图片路径", "状态", "类别ID", "类别名称", "置信度", "x1", "y1", "x2", "y2", "说明"])
+        with package.open("results.jsonl") as source:
+            for line in source:
+                result = json.loads(line)
+                detections = result.get("detections", [])
+                if not detections:
+                    output.writerow([result.get("image", ""), "未检测到目标", "", "", "", "", "", "", "", ""])
+                    continue
+                for detection in detections:
+                    x1, y1, x2, y2 = detection["box_xyxy"]
+                    output.writerow([result.get("image", ""), "已识别", detection["class_id"], detection["class_name"], detection["confidence"], x1, y1, x2, y2, ""])
+        summary = json.loads(package.read("summary.json"))
+        for skipped in summary.get("skipped", []):
+            output.writerow([skipped.get("image", ""), "已跳过", "", "", "", "", "", "", "", skipped.get("reason", "")])
+    return csv_path
 
 
 def normalize_imgsz(value: str) -> str:
@@ -325,5 +349,7 @@ def download_result(job_id: str) -> FileResponse:
     elif job.get("task_type") == "evaluate":
         filename, media_type = f"{job_id}-evaluation.json", "application/json"
     else:
-        filename, media_type = f"{job_id}-inference.zip", "application/zip"
+        if path.suffix.lower() == ".zip":
+            path = legacy_inference_csv(path)
+        filename, media_type = f"{job_id}-inference.csv", "text/csv; charset=utf-8"
     return FileResponse(path, filename=filename, media_type=media_type)
