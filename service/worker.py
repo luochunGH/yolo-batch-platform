@@ -462,16 +462,57 @@ def release_gpu_memory() -> None:
         pass
 
 
+def active_worker_job_ids() -> set[str]:
+    job_ids: set[str] = set()
+    for path in db.DATA_DIR.glob("worker-status*.json"):
+        try:
+            status = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if status.get("state") in {"training", "evaluating", "inferring"} and status.get("job_id"):
+            job_ids.add(str(status["job_id"]))
+    return job_ids
+
+
+def preserve_interrupted_run(job_id: str) -> None:
+    run_dir = db.DATA_DIR / "results" / job_id / "run"
+    if not run_dir.is_dir():
+        return
+    archived_run = run_dir.with_name(f"interrupted-{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.move(str(run_dir), str(archived_run))
+
+
+def recover_interrupted_jobs(redis_client: redis.Redis) -> None:
+    active_jobs = active_worker_job_ids()
+    for job in db.list_jobs(limit=10000):
+        status = str(job.get("status"))
+        job_id = str(job["id"])
+        if status not in {"running", "cancelling"} or job_id in active_jobs:
+            continue
+        if not redis_client.set(f"yolo:recovery:{job_id}", "1", nx=True, ex=30):
+            continue
+        if status == "cancelling":
+            db.update_job(job_id, status="cancelled", finished_at=db.now(), error="Worker 重启时任务正在取消")
+            continue
+        preserve_interrupted_run(job_id)
+        db.update_job(
+            job_id,
+            status="queued",
+            completed=0,
+            failed=0,
+            started_at=None,
+            finished_at=None,
+            error="Worker 意外重启，已从原始 ZIP 自动重新排队",
+        )
+        redis_client.rpush(QUEUE_KEY, job_id)
+
+
 def main() -> None:
     db.initialize()
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if WORKER_ID == "worker-1" and redis_client.set("yolo:worker-recovery", "1", nx=True, ex=60):
-        for job in db.list_jobs(limit=10000):
-            if job["status"] in {"running", "cancelling"}:
-                db.update_job(job["id"], status="queued", started_at=None, error="Worker 重启后自动重新排队")
-                redis_client.rpush(QUEUE_KEY, job["id"])
     write_worker_status("idle")
+    recover_interrupted_jobs(redis_client)
     while True:
         item = redis_client.blpop(QUEUE_KEY, timeout=10)
         if item:
