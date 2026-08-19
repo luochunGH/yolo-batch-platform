@@ -131,7 +131,7 @@ def get_dashboard() -> dict[str, object]:
     usage = shutil.disk_usage(db.DATA_DIR)
     status_paths = sorted(db.DATA_DIR.glob("worker-status*.json"))
     worker_statuses = [json.loads(path.read_text(encoding="utf-8")) for path in status_paths]
-    worker_status = next((item for item in worker_statuses if item.get("state") not in {"idle", None}), worker_statuses[0] if worker_statuses else {})
+    worker_status = dict(next((item for item in worker_statuses if item.get("state") not in {"idle", None}), worker_statuses[0] if worker_statuses else {}))
     worker_status["workers"] = worker_statuses
     return {
         **db.dashboard(),
