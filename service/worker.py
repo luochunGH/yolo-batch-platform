@@ -543,7 +543,7 @@ def run_inference(job_id: str) -> None:
 
 def run_job(job_id: str, redis_client: redis.Redis) -> None:
     job = db.get_job(job_id)
-    if not job or job["status"] == "cancelled":
+    if not job or job["status"] != "running":
         return
     if job.get("task_type") == "train":
         run_training(job_id, redis_client)
