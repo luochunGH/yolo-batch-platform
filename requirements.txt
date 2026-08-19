@@ -6,3 +6,6 @@ pillow>=11,<13
 opencv-python==4.10.0.84
 pyyaml==6.0.3
 ultralytics==8.3.0
+onnx==1.19.1
+onnxslim==0.1.34
+onnxruntime==1.16.3

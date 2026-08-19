@@ -176,7 +176,7 @@ def build_model_package(job_id: str, best_path: Path, last_path: Path, model_dir
     try:
         from ultralytics import YOLO
 
-        YOLO(str(best_path)).export(format="onnx", imgsz=DEFAULT_IMGSZ, device="cpu", verbose=False)
+        YOLO(str(best_path)).export(format="onnx", imgsz=DEFAULT_IMGSZ, device="cpu", simplify=False, verbose=False)
         exported = best_path.with_suffix(".onnx")
         if exported.is_file() and exported != onnx_path:
             shutil.copy2(exported, onnx_path)
