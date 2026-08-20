@@ -28,7 +28,7 @@ TRAIN_QUEUE_KEY = "yolo:jobs:train"
 NONTRAIN_QUEUE_KEY = "yolo:jobs:nontrain"
 DOWNLOAD_TOKEN_PREFIX = "yolo:download:"
 DOWNLOAD_TOKEN_TTL = int(os.getenv("DOWNLOAD_TOKEN_TTL_SECONDS", "300"))
-MODEL_NAMES = ("yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt")
+MODEL_NAMES = ("yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt", "yolo11s-seg.pt")
 NAME_SUFFIX_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
