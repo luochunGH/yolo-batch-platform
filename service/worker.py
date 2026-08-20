@@ -33,6 +33,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "yolo11n.pt")
 DEVICE = os.getenv("DEVICE", "0")
 DEFAULT_IMGSZ = int(os.getenv("IMGSZ", "640"))
 DEFAULT_BATCH_SIZE = int(os.getenv("BATCH_SIZE", "32"))
+ORIGINAL_INFERENCE_BATCH_SIZE = int(os.getenv("ORIGINAL_INFERENCE_BATCH_SIZE", "1"))
 DEFAULT_CONFIDENCE = float(os.getenv("CONFIDENCE", "0.25"))
 DATALOADER_WORKERS = int(os.getenv("DATALOADER_WORKERS", "2"))
 WORKER_ID = os.getenv("WORKER_ID", "worker-1")
@@ -216,6 +217,17 @@ def resolve_imgsz(value: object, dataset_root: Path | None = None) -> int | tupl
         width, height = (int(part) for part in match.groups())
         return (height, width)
     raise ValueError(f"invalid imgsz: {value}")
+
+
+def inference_imgsz(value: object, image: Path) -> int | tuple[int, int]:
+    """Resolve the requested inference shape without silently changing it."""
+    size = str(value or DEFAULT_IMGSZ).strip().lower().replace("×", "x")
+    if size != "original":
+        return resolve_imgsz(size)
+    with Image.open(image) as source:
+        width, height = source.size
+    # YOLO requires stride-aligned dimensions. Preserve the source dimensions otherwise.
+    return (int((height + 31) // 32 * 32), int((width + 31) // 32 * 32))
 
 
 def serialize_result(result: object, source: Path) -> dict[str, object]:
@@ -501,34 +513,43 @@ def run_inference(job_id: str) -> None:
         result_path = result_dir / "inference-results.csv"
         annotated_dir = result_dir / "images"
         archive_result = result_dir / "inference-images.zip"
-        batch_size = DEFAULT_BATCH_SIZE
+        requested_size = str(job["imgsz"] or DEFAULT_IMGSZ).strip().lower()
+        image_groups: dict[int | tuple[int, int], list[Path]] = {}
+        for image in images:
+            target_size = inference_imgsz(requested_size, image)
+            image_groups.setdefault(target_size, []).append(image)
+        batch_size = ORIGINAL_INFERENCE_BATCH_SIZE if requested_size == "original" else DEFAULT_BATCH_SIZE
         with result_path.open("w", encoding="utf-8-sig", newline="") as stream:
             output = csv.writer(stream)
             output.writerow(["图片路径", "状态", "类别ID", "类别名称", "置信度", "x1", "y1", "x2", "y2", "说明"])
             for skipped_image in skipped:
                 output.writerow([skipped_image["image"], "已跳过", "", "", "", "", "", "", "", skipped_image["reason"]])
-            for offset in range(0, len(images), batch_size):
-                current = db.get_job(job_id)
-                if not owns_attempt(current, job_id) or current["status"] in {"cancelling", "cancelled"}:
-                    update_attempt(job_id, status="cancelled", finished_at=db.now())
-                    return
-                batch = images[offset : offset + batch_size]
-                results = model.predict(
-                    source=[str(image) for image in batch],
-                    imgsz=resolve_imgsz(job["imgsz"]),
-                    conf=float(job["confidence"] or DEFAULT_CONFIDENCE),
-                    device=DEVICE,
-                    half=True,
-                    verbose=False,
-                )
-                for image, result in zip(batch, results):
-                    relative_image = image.relative_to(work_dir)
-                    write_inference_result_rows(output, result, relative_image)
-                    target = annotated_dir / relative_image
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    Image.fromarray(result.plot()[:, :, ::-1]).save(target)
-                update_attempt(job_id, completed=min(offset + len(batch), len(images)), failed=len(skipped))
-                write_worker_status("inferring", job_id, phase=f"推理图片 {min(offset + len(batch), len(images))}/{len(images)}")
+            completed = 0
+            for target_size, grouped_images in image_groups.items():
+                for offset in range(0, len(grouped_images), batch_size):
+                    current = db.get_job(job_id)
+                    if not owns_attempt(current, job_id) or current["status"] in {"cancelling", "cancelled"}:
+                        update_attempt(job_id, status="cancelled", finished_at=db.now())
+                        return
+                    batch = grouped_images[offset : offset + batch_size]
+                    results = model.predict(
+                        source=[str(image) for image in batch],
+                        imgsz=target_size,
+                        conf=float(job["confidence"] or DEFAULT_CONFIDENCE),
+                        device=DEVICE,
+                        half=True,
+                        verbose=False,
+                    )
+                    for image, result in zip(batch, results):
+                        relative_image = image.relative_to(work_dir)
+                        write_inference_result_rows(output, result, relative_image)
+                        target = annotated_dir / relative_image
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        Image.fromarray(result.plot()[:, :, ::-1]).save(target)
+                    completed += len(batch)
+                    update_attempt(job_id, completed=completed, failed=len(skipped))
+                    size_label = f"{target_size[1]}x{target_size[0]}" if isinstance(target_size, tuple) else str(target_size)
+                    write_worker_status("inferring", job_id, phase=f"推理图片 {completed}/{len(images)}", requested_imgsz=requested_size, actual_imgsz=size_label, batch_size=len(batch))
         with zipfile.ZipFile(archive_result, "w", zipfile.ZIP_DEFLATED) as package:
             for image in images:
                 target = annotated_dir / image.relative_to(work_dir)
