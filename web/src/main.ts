@@ -84,7 +84,7 @@ const App = {
       return minutes ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`
     }
     const sortedJobs = computed(() => [...jobs.value].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)))
-    const modelOptions = ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt']
+    const modelOptions = ['yolo11n.pt', 'yolo11s.pt', 'yolo11m.pt', 'yolo11l.pt', 'yolo11x.pt', 'yolo11s-seg.pt']
     const availableModels = computed(() => dashboard.value.models || [])
     const trainedModels = computed(() => dashboard.value.trained_models || [])
     const isTrain = computed(() => mode.value === 'train')
