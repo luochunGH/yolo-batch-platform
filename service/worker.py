@@ -128,6 +128,20 @@ def model_path_for_job(job: dict[str, object]) -> Path:
     return path
 
 
+def is_segmentation_model(model: object) -> bool:
+    return str(model or "").lower().endswith("-seg.pt")
+
+
+def job_uses_segmentation(job: dict[str, object]) -> bool:
+    if is_segmentation_model(job.get("model")):
+        return True
+    model_id = job.get("model_id")
+    if model_id:
+        trained = db.get_job(str(model_id))
+        return bool(trained and is_segmentation_model(trained.get("model")))
+    return False
+
+
 def safe_extract(source: Path, destination: Path) -> None:
     with zipfile.ZipFile(source) as package:
         for item in package.infolist():
@@ -298,20 +312,28 @@ def label_path_for(image: Path, dataset_root: Path) -> Path:
     return image.with_suffix(".txt")
 
 
-def validate_label_file(label_path: Path, class_count: int) -> None:
+def validate_label_file(label_path: Path, class_count: int, segmentation: bool = False) -> None:
     for line_number, line in enumerate(label_path.read_text(encoding="utf-8").splitlines(), start=1):
         values = line.split()
         if not values:
             continue
-        if len(values) != 5:
+        if segmentation:
+            if len(values) < 7 or len(values[1:]) % 2 != 0:
+                raise ValueError(f"invalid segmentation label format: {label_path.name}:{line_number}")
+        elif len(values) != 5:
             raise ValueError(f"invalid label format: {label_path.name}:{line_number}")
         class_id = int(values[0])
         coordinates = [float(value) for value in values[1:]]
-        if not 0 <= class_id < class_count or any(value < 0 or value > 1 for value in coordinates) or coordinates[2] <= 0 or coordinates[3] <= 0:
+        invalid_geometry = (
+            len(coordinates) < 6
+            if segmentation
+            else coordinates[2] <= 0 or coordinates[3] <= 0
+        )
+        if not 0 <= class_id < class_count or any(value < 0 or value > 1 for value in coordinates) or invalid_geometry:
             raise ValueError(f"invalid label values: {label_path.name}:{line_number}")
 
 
-def prepare_training_dataset(work_dir: Path) -> tuple[Path, int, int]:
+def prepare_training_dataset(work_dir: Path, segmentation: bool = False) -> tuple[Path, int, int]:
     yaml_files = sorted(list(work_dir.rglob("data.yaml")) + list(work_dir.rglob("data.yml")))
     if not yaml_files:
         raise ValueError("training archive must contain data.yaml or data.yml")
@@ -349,7 +371,7 @@ def prepare_training_dataset(work_dir: Path) -> tuple[Path, int, int]:
         label_path = label_path_for(image_path, dataset_root)
         if not label_path.exists():
             raise ValueError(f"label file is missing for {image_path.name}")
-        validate_label_file(label_path, len(names))
+        validate_label_file(label_path, len(names), segmentation=segmentation)
 
     normalized = dict(config)
     normalized["path"] = str(dataset_root)
@@ -371,6 +393,7 @@ def run_training(job_id: str, redis_client: redis.Redis) -> None:
     model_dir = db.DATA_DIR / "models" / job_id
     try:
         epochs = int(job["epochs"] or 50)
+        segmentation = is_segmentation_model(job.get("model"))
         run_dir = result_dir / "run"
         resume_path = run_dir / "weights" / "last.pt"
         resuming = resume_path.is_file()
@@ -382,7 +405,7 @@ def run_training(job_id: str, redis_client: redis.Redis) -> None:
         write_worker_status("training", job_id, phase="恢复训练数据" if resuming else "解压数据集")
         safe_extract(archive, work_dir)
         write_worker_status("training", job_id, phase="校验标注数据")
-        data_path, image_count, class_count = prepare_training_dataset(work_dir)
+        data_path, image_count, class_count = prepare_training_dataset(work_dir, segmentation=segmentation)
         update_attempt(job_id, dataset_path=str(data_path), total=epochs)
         completed = int(job.get("completed") or 0) if resuming else 0
         write_worker_status("training", job_id, phase=f"从 Epoch {completed}/{epochs} 恢复训练" if resuming else "加载基础模型", image_count=image_count, class_count=class_count, epoch=completed, epochs=epochs)
@@ -446,7 +469,7 @@ def run_evaluation(job_id: str) -> None:
         work_dir.mkdir(parents=True, exist_ok=True)
         result_dir.mkdir(parents=True, exist_ok=True)
         safe_extract(archive, work_dir)
-        data_path, image_count, class_count = prepare_training_dataset(work_dir)
+        data_path, image_count, class_count = prepare_training_dataset(work_dir, segmentation=job_uses_segmentation(job))
         update_attempt(job_id, dataset_path=str(data_path), total=image_count, completed=0)
         write_worker_status("evaluating", job_id, phase="准备评估环境", image_count=image_count, class_count=class_count)
         model = YOLO(str(model_path_for_job(job)))
